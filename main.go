@@ -3,13 +3,15 @@ package main
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 )
+
+var wg sync.WaitGroup
 
 // handleStdin writes data from standard in to a channel
 func handleStdin(ctx context.Context) chan string {
@@ -17,7 +19,11 @@ func handleStdin(ctx context.Context) chan string {
 	ch := make(chan string, 1)
 	go func() {
 		defer func() {
+			if err := s.Err(); err != nil {
+				log.Println(err)
+			}
 			close(ch)
+			wg.Done()
 		}()
 		for s.Scan() {
 			select {
@@ -47,22 +53,26 @@ func handleHTTP(ctx context.Context) chan string {
 	go func() {
 		log.Println(server.ListenAndServe())
 	}()
+	log.Println("Listening on 8888")
 	go func() {
 		<-ctx.Done()
 		if err := server.Shutdown(context.TODO()); err != nil {
 			log.Println(err)
 		}
 		close(ch)
+		wg.Done()
 	}()
 	return ch
 }
 
 func main() {
-	fmt.Println("Awesome Server version 0.0.0 running")
+	log.Println("Awesome Server version 0.0.0 running")
 
 	// Shutdown logic
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
+		log.Println("Shutting down...")
+		wg.Wait()
 		if err := ctx.Err(); err != nil && err != context.Canceled {
 			log.Fatal(err)
 		}
@@ -78,17 +88,19 @@ func main() {
 	// Echo messages from HTTP port 8888
 	http := handleHTTP(ctx)
 
+	// Two workers handling incoming messages
+	wg.Add(2)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-sig:
-			fmt.Println("\rCaught signal, shutting down")
 			cancel()
 		case msg := <-stdin:
-			fmt.Printf("Message from stdin: %q\n", msg)
+			log.Printf("Message from stdin: %q\n", msg)
 		case msg := <-http:
-			fmt.Printf("Message from HTTP: %q\n", msg)
+			log.Printf("Message from HTTP: %q\n", msg)
 		}
 	}
 }
